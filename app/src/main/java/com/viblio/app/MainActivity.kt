@@ -6,9 +6,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.widget.Toast
-import android.webkit.WebChromeClient
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -42,31 +39,6 @@ private val Bg = Color(0xFF101114)
 private val Panel = Color(0xCC24262B)
 private val Accent = Color(0xFFC2A47E)
 private val Muted = Color(0xFF9A9BA1)
-
-private val TikTokProxyHost = "kktiktok.com"
-
-/**
- * Mirrors the host-rewrite strategy used by Invisible TikTok.
- * The result is a proxy page URL, not a guaranteed direct MP4 stream.
- */
-private fun rewriteTikTokUrlForProxy(rawUrl: String): String = runCatching {
-    val normalized = if (rawUrl.startsWith("http", ignoreCase = true)) rawUrl else "https://$rawUrl"
-    val uri = Uri.parse(normalized)
-    val host = (uri.host ?: return rawUrl).lowercase()
-    if (host != "tiktok.com" && !host.endsWith(".tiktok.com")) return rawUrl
-
-    val subdomain = if (host.endsWith(".tiktok.com")) host.removeSuffix("tiktok.com") else ""
-    val path = uri.path.orEmpty()
-    if (path.startsWith("/@") && !path.contains("/video/")) return rawUrl
-
-    val cleanPath = if (subdomain.startsWith("vt.") || subdomain.startsWith("vm.")) {
-        Regex("^/[A-Za-z0-9]+").find(path)?.value ?: path
-    } else {
-        Regex("/@[^/?#]+/video/[0-9]+|/video/[0-9]+", RegexOption.IGNORE_CASE).find(path)?.value ?: path
-    }
-    Uri.Builder().scheme("https").encodedAuthority(subdomain + TikTokProxyHost)
-        .encodedPath(cleanPath).build().toString()
-}.getOrDefault(rawUrl)
 
 data class Clip(val title: String, val url: String, val playlist: String, val downloaded: Boolean = false, val favorite: Boolean = false)
 
@@ -319,32 +291,20 @@ fun VideoPage(clip: Clip, context: Context, onToggleFavorite: (Clip) -> Unit) {
                 }
             }
         } else {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { viewContext ->
-                    WebView(viewContext).apply {
-                        setBackgroundColor(android.graphics.Color.BLACK)
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.mediaPlaybackRequiresUserGesture = false
-                        settings.loadsImagesAutomatically = true
-                        settings.useWideViewPort = true
-                        settings.loadWithOverviewMode = true
-                        webChromeClient = WebChromeClient()
-                        webViewClient = WebViewClient()
-                        // Apply the same TikTok proxy-domain rewrite as Invisible TikTok.
-                        loadUrl(rewriteTikTokUrlForProxy(clip.url))
-                    }
-                },
-                update = {
-                    val target = rewriteTikTokUrlForProxy(clip.url)
-                    if (it.url != target) it.loadUrl(target)
-                }
-            )
-            Text("TikTok · встроенная страница", color = Color.White.copy(alpha = 0.72f), fontSize = 11.sp,
-                modifier = Modifier.align(Alignment.TopStart).padding(14.dp)
-                    .background(Color(0x88202020), RoundedCornerShape(18.dp)).padding(horizontal = 12.dp, vertical = 8.dp))
+            Column(
+                modifier = Modifier.align(Alignment.Center).padding(28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("Видео ещё не получено", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Ссылка сохранена в плейлисте, но Viblio пока не получил сам видеофайл. Веб-страница больше не открывается внутри приложения. Чтобы посмотреть ролик, добавь видеофайл, когда он будет доступен.",
+                    color = Muted, fontSize = 14.sp
+                )
+                Text("♡", color = Accent, modifier = Modifier.clickable { onToggleFavorite(clip) }.padding(8.dp), fontSize = 24.sp)
+            }
         }
+
         Text(clip.title, color = Color.White, fontWeight = FontWeight.Bold,
             modifier = Modifier.align(Alignment.BottomStart).padding(20.dp))
     }
