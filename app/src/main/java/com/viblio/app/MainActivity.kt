@@ -8,6 +8,8 @@ import android.os.Environment
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -31,6 +33,7 @@ import androidx.media3.ui.PlayerView
 import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 
 private val Bg = Color(0xFF090A0F)
 private val Panel = Color(0xFF171923)
@@ -59,27 +62,67 @@ fun ViblioApp(context: Context, sharedLink: String?) {
     val prefs = remember { context.getSharedPreferences("viblio", Context.MODE_PRIVATE) }
     val clips = remember {
         mutableStateListOf<Clip>().apply {
-            val raw = prefs.getString("clips", "[]") ?: "[]"
-            val arr = JSONArray(raw)
+            val arr = runCatching { JSONArray(prefs.getString("clips", "[]") ?: "[]") }.getOrDefault(JSONArray())
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
+                val o = arr.optJSONObject(i) ?: continue
                 add(Clip(o.optString("title"), o.optString("url"), o.optString("playlist"), o.optBoolean("downloaded")))
             }
         }
     }
-    val playlists = remember { mutableStateListOf("Избранное", "Юмор", "Обучение", "Спорт", "Рецепты") }
+    val defaultPlaylists = listOf("Избранное", "Юмор", "Обучение", "Спорт", "Рецепты")
+    val playlists = remember {
+        mutableStateListOf<String>().apply {
+            val arr = runCatching { JSONArray(prefs.getString("playlists", "[]") ?: "[]") }.getOrDefault(JSONArray())
+            for (i in 0 until arr.length()) {
+                val value = arr.optString(i)
+                if (value.isNotBlank() && !contains(value)) add(value)
+            }
+            if (isEmpty()) addAll(defaultPlaylists)
+            clips.map { it.playlist }.filter { it.isNotBlank() }.forEach { if (!contains(it)) add(it) }
+        }
+    }
     var selectedPlaylist by remember { mutableStateOf<String?>(null) }
     var showAdd by remember { mutableStateOf(false) }
     var showNewPlaylist by remember { mutableStateOf(false) }
     var incoming by remember { mutableStateOf(sharedLink.orEmpty()) }
 
-    fun persist() {
+    fun persistClips() {
         val arr = JSONArray()
         clips.forEach { c ->
             arr.put(JSONObject().put("title", c.title).put("url", c.url)
                 .put("playlist", c.playlist).put("downloaded", c.downloaded))
         }
         prefs.edit().putString("clips", arr.toString()).apply()
+    }
+
+    fun persistPlaylists() {
+        val arr = JSONArray()
+        playlists.forEach { arr.put(it) }
+        prefs.edit().putString("playlists", arr.toString()).apply()
+    }
+
+    val importVideo = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) {
+            runCatching {
+                val folder = File(context.filesDir, "videos").apply { mkdirs() }
+                val file = File(folder, "viblio_${System.currentTimeMillis()}.mp4")
+                context.contentResolver.openInputStream(uri).use { input ->
+                    requireNotNull(input) { "Не удалось открыть файл" }.use { source ->
+                        file.outputStream().use { output -> source.copyTo(output) }
+                    }
+                }
+                val list = selectedPlaylist ?: "Избранное"
+                if (!playlists.contains(list)) {
+                    playlists.add(list)
+                    persistPlaylists()
+                }
+                clips.add(Clip(file.nameWithoutExtension, Uri.fromFile(file).toString(), list, true))
+                persistClips()
+                Toast.makeText(context, "Видео добавлено в «$list»", Toast.LENGTH_LONG).show()
+            }.onFailure {
+                Toast.makeText(context, "Не удалось импортировать видео: ${it.message}", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     Surface(Modifier.fillMaxSize(), color = Bg) {
@@ -116,27 +159,31 @@ fun ViblioApp(context: Context, sharedLink: String?) {
                         }
                     }
                 }
-                Button(onClick = { showAdd = true }, modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp).height(54.dp),
+                Button(onClick = { importVideo.launch(arrayOf("video/*")) }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Panel, contentColor = Accent),
+                    shape = RoundedCornerShape(16.dp)) { Text("Импортировать видео с телефона") }
+                Button(onClick = { showAdd = true }, modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp).height(54.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Bg),
-                    shape = RoundedCornerShape(16.dp)) { Text("+ Добавить видео", fontWeight = FontWeight.Bold) }
+                    shape = RoundedCornerShape(16.dp)) { Text("+ Добавить ссылку", fontWeight = FontWeight.Bold) }
             }
         } else {
             val current = selectedPlaylist!!
             val playlistClips = clips.filter { it.playlist == current }
             Column(Modifier.fillMaxSize()) {
-                Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("‹", fontSize = 30.sp, modifier = Modifier.clickable { selectedPlaylist = null }.padding(end = 14.dp))
                     Column(Modifier.weight(1f)) {
                         Text(current, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                         Text("${playlistClips.size} видео · листай вверх", color = Muted, fontSize = 12.sp)
                     }
-                    TextButton(onClick = { showAdd = true }) { Text("+ Добавить", color = Accent) }
+                    TextButton(onClick = { importVideo.launch(arrayOf("video/*")) }) { Text("+ Файл", color = Accent) }
+                    TextButton(onClick = { showAdd = true }) { Text("+ Ссылка", color = Accent) }
                 }
                 if (playlistClips.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text("Здесь пока пусто", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                            Text("Добавь первое видео в этот плейлист", color = Muted)
+                            Text("Добавь видеофайл или ссылку", color = Muted)
                         }
                     }
                 } else {
@@ -151,11 +198,16 @@ fun ViblioApp(context: Context, sharedLink: String?) {
 
     if (showAdd) {
         AddClipDialog(incoming, playlists.toList(), selectedPlaylist, onDismiss = { showAdd = false }) { title, url, list ->
-            val isDirect = url.lowercase().let { it.endsWith(".mp4") || it.contains(".mp4?") || it.endsWith(".m3u8") }
             clips.add(Clip(title.ifBlank { "Видео ${clips.size + 1}" }, url.trim(), list, false))
-            persist()
-            if (isDirect) downloadDirect(context, url.trim(), title)
-            else Toast.makeText(context, "Ссылка сохранена. Для скачивания нужен разрешённый прямой URL видео.", Toast.LENGTH_LONG).show()
+            if (!playlists.contains(list)) {
+                playlists.add(list)
+                persistPlaylists()
+            }
+            persistClips()
+            val lower = url.trim().lowercase()
+            val isDirect = lower.substringBefore("?").substringBefore("#").let { it.endsWith(".mp4") || it.endsWith(".m3u8") }
+            if (isDirect && (lower.startsWith("https://") || lower.startsWith("http://"))) downloadDirect(context, url.trim(), title)
+            else Toast.makeText(context, "Ссылка сохранена. Ссылки TikTok не являются видеофайлами — для просмотра внутри Viblio импортируй MP4 с телефона.", Toast.LENGTH_LONG).show()
             incoming = ""
             showAdd = false
         }
@@ -165,7 +217,11 @@ fun ViblioApp(context: Context, sharedLink: String?) {
         AlertDialog(onDismissRequest = { showNewPlaylist = false }, title = { Text("Новый плейлист") },
             text = { OutlinedTextField(name, { name = it }, label = { Text("Название") }, singleLine = true) },
             confirmButton = { TextButton(onClick = {
-                if (name.isNotBlank() && !playlists.contains(name.trim())) playlists.add(name.trim())
+                val clean = name.trim()
+                if (clean.isNotBlank() && !playlists.contains(clean)) {
+                    playlists.add(clean)
+                    persistPlaylists()
+                }
                 showNewPlaylist = false
             }) { Text("Создать") } },
             dismissButton = { TextButton(onClick = { showNewPlaylist = false }) { Text("Отмена") } },
@@ -180,7 +236,7 @@ fun AddClipDialog(initial: String, lists: List<String>, preferred: String?, onDi
     var title by remember { mutableStateOf("") }
     var playlist by remember { mutableStateOf(preferred ?: lists.firstOrNull() ?: "Избранное") }
     AlertDialog(onDismissRequest = onDismiss, containerColor = Panel,
-        title = { Text("Добавить видео") },
+        title = { Text("Добавить ссылку") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(url, { url = it }, label = { Text("Ссылка на видео") }, placeholder = { Text("https://...") })
@@ -201,19 +257,27 @@ fun AddClipDialog(initial: String, lists: List<String>, preferred: String?, onDi
 
 @Composable
 fun VideoPage(clip: Clip, context: Context) {
-    val isDirect = clip.url.lowercase().let { it.endsWith(".mp4") || it.contains(".mp4?") || it.endsWith(".m3u8") }
+    val cleanUrl = clip.url.lowercase().substringBefore("?").substringBefore("#")
+    val isDirect = clip.url.startsWith("file://") || clip.url.startsWith("content://") ||
+        cleanUrl.endsWith(".mp4") || cleanUrl.endsWith(".m3u8")
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (isDirect) {
-            val player = remember(clip.url) { ExoPlayer.Builder(context).build().apply { setMediaItem(MediaItem.fromUri(clip.url)); prepare(); playWhenReady = true } }
+            val player = remember(clip.url) {
+                ExoPlayer.Builder(context).build().apply {
+                    setMediaItem(MediaItem.fromUri(clip.url))
+                    prepare()
+                    playWhenReady = true
+                }
+            }
             DisposableEffect(player) { onDispose { player.release() } }
-            AndroidView(factory = { PlayerView(it).apply { this.player = player; useController = true } },
-                modifier = Modifier.fillMaxSize())
+            AndroidView(factory = { PlayerView(it).apply { player = player; useController = true } },
+                modifier = Modifier.fillMaxSize(), update = { it.player = player })
         } else {
             Column(Modifier.align(Alignment.Center).padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("↗", color = Accent, fontSize = 54.sp)
-                Text("Ссылка сохранена", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text("Это ссылка, а не видеофайл", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
-                Text("Для просмотра внутри Viblio добавь разрешённый видеофайл MP4 или M3U8. Ссылку можно открыть отдельно.", color = Muted)
+                Text("Чтобы смотреть ролик внутри Viblio, сохрани видеофайл MP4 на телефон и добавь его кнопкой «+ Файл». Ссылку TikTok можно открыть отдельно.", color = Muted)
                 Spacer(Modifier.height(18.dp))
                 Button(onClick = {
                     runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(clip.url)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
