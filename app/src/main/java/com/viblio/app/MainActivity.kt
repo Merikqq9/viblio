@@ -35,12 +35,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-private val Bg = Color(0xFF090A0F)
-private val Panel = Color(0xFF171923)
-private val Accent = Color(0xFFB7F36B)
-private val Muted = Color(0xFF9A9DAC)
+private val Bg = Color(0xFF101114)
+private val Panel = Color(0xCC24262B)
+private val Accent = Color(0xFFC2A47E)
+private val Muted = Color(0xFF9A9BA1)
 
-data class Clip(val title: String, val url: String, val playlist: String, val downloaded: Boolean = false)
+data class Clip(val title: String, val url: String, val playlist: String, val downloaded: Boolean = false, val favorite: Boolean = false)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,11 +65,10 @@ fun ViblioApp(context: Context, sharedLink: String?) {
             val arr = runCatching { JSONArray(prefs.getString("clips", "[]") ?: "[]") }.getOrDefault(JSONArray())
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
-                add(Clip(o.optString("title"), o.optString("url"), o.optString("playlist"), o.optBoolean("downloaded")))
+                add(Clip(o.optString("title"), o.optString("url"), o.optString("playlist"), o.optBoolean("downloaded"), o.optBoolean("favorite")))
             }
         }
     }
-    val defaultPlaylists = listOf("Избранное", "Юмор", "Обучение", "Спорт", "Рецепты")
     val playlists = remember {
         mutableStateListOf<String>().apply {
             val arr = runCatching { JSONArray(prefs.getString("playlists", "[]") ?: "[]") }.getOrDefault(JSONArray())
@@ -77,7 +76,6 @@ fun ViblioApp(context: Context, sharedLink: String?) {
                 val value = arr.optString(i)
                 if (value.isNotBlank() && !contains(value)) add(value)
             }
-            if (isEmpty()) addAll(defaultPlaylists)
             clips.map { it.playlist }.filter { it.isNotBlank() }.forEach { if (!contains(it)) add(it) }
         }
     }
@@ -90,7 +88,7 @@ fun ViblioApp(context: Context, sharedLink: String?) {
         val arr = JSONArray()
         clips.forEach { c ->
             arr.put(JSONObject().put("title", c.title).put("url", c.url)
-                .put("playlist", c.playlist).put("downloaded", c.downloaded))
+                .put("playlist", c.playlist).put("downloaded", c.downloaded).put("favorite", c.favorite))
         }
         prefs.edit().putString("clips", arr.toString()).apply()
     }
@@ -189,7 +187,10 @@ fun ViblioApp(context: Context, sharedLink: String?) {
                 } else {
                     val pager = rememberPagerState(pageCount = { playlistClips.size })
                     VerticalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
-                        VideoPage(playlistClips[page], context)
+                        VideoPage(playlistClips[page], context, onToggleFavorite = { clip ->
+                            val index = clips.indexOfFirst { it.url == clip.url && it.playlist == clip.playlist }
+                            if (index >= 0) { clips[index] = clips[index].copy(favorite = !clips[index].favorite); persistClips() }
+                        })
                     }
                 }
             }
@@ -256,22 +257,32 @@ fun AddClipDialog(initial: String, lists: List<String>, preferred: String?, onDi
 }
 
 @Composable
-fun VideoPage(clip: Clip, context: Context) {
+fun VideoPage(clip: Clip, context: Context, onToggleFavorite: (Clip) -> Unit) {
     val cleanUrl = clip.url.lowercase().substringBefore("?").substringBefore("#")
     val isDirect = clip.url.startsWith("file://") || clip.url.startsWith("content://") ||
         cleanUrl.endsWith(".mp4") || cleanUrl.endsWith(".m3u8")
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (isDirect) {
-            val player = remember(clip.url) {
+            val exoPlayer = remember(clip.url) {
                 ExoPlayer.Builder(context).build().apply {
                     setMediaItem(MediaItem.fromUri(clip.url))
                     prepare()
                     playWhenReady = true
                 }
             }
-            DisposableEffect(player) { onDispose { player.release() } }
-            AndroidView(factory = { PlayerView(it).apply { player = player; useController = true } },
-                modifier = Modifier.fillMaxSize(), update = { it.player = player })
+            var speed by remember(clip.url) { mutableFloatStateOf(1f) }
+            DisposableEffect(exoPlayer) { onDispose { exoPlayer.release() } }
+            AndroidView(factory = { PlayerView(it).apply { this.player = exoPlayer; useController = true } },
+                modifier = Modifier.fillMaxSize(), update = { it.player = exoPlayer })
+            Row(Modifier.align(Alignment.TopEnd).padding(18.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(color = Color(0xAA202126), shape = RoundedCornerShape(22.dp), modifier = Modifier.clickable {
+                    speed = when (speed) { 1f -> 1.5f; 1.5f -> 2f; else -> 1f }
+                    exoPlayer.setPlaybackSpeed(speed)
+                }) { Text("${speed}×", color = Color.White, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp), fontWeight = FontWeight.SemiBold) }
+                Surface(color = Color(0xAA202126), shape = RoundedCornerShape(22.dp), modifier = Modifier.clickable { onToggleFavorite(clip) }) {
+                    Text(if (clip.favorite) "♥" else "♡", color = Accent, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp), fontSize = 20.sp)
+                }
+            }
         } else {
             Column(Modifier.align(Alignment.Center).padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("↗", color = Accent, fontSize = 54.sp)
