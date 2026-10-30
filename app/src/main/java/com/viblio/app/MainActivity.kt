@@ -6,6 +6,9 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.widget.Toast
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -43,17 +46,23 @@ private val Muted = Color(0xFF9A9BA1)
 data class Clip(val title: String, val url: String, val playlist: String, val downloaded: Boolean = false, val favorite: Boolean = false)
 
 class MainActivity : ComponentActivity() {
+    private var sharedText by mutableStateOf<String?>(null)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val shared = intent?.getStringExtra(android.content.Intent.EXTRA_TEXT)
+        sharedText = intent?.getStringExtra(android.content.Intent.EXTRA_TEXT)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(
                 background = Bg, surface = Panel, primary = Accent,
                 onBackground = Color.White, onSurface = Color.White
             )) {
-                ViblioApp(this, shared)
+                ViblioApp(this, sharedText)
             }
         }
+    }
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        sharedText = intent.getStringExtra(android.content.Intent.EXTRA_TEXT)
     }
 }
 
@@ -83,6 +92,7 @@ fun ViblioApp(context: Context, sharedLink: String?) {
     var showAdd by remember { mutableStateOf(false) }
     var showNewPlaylist by remember { mutableStateOf(false) }
     var incoming by remember { mutableStateOf(sharedLink.orEmpty()) }
+    LaunchedEffect(sharedLink) { if (!sharedLink.isNullOrBlank()) { incoming = sharedLink; showAdd = true } }
 
     fun persistClips() {
         val arr = JSONArray()
@@ -235,7 +245,7 @@ fun AddClipDialog(initial: String, lists: List<String>, preferred: String?, onDi
                   onSave: (String, String, String) -> Unit) {
     var url by remember { mutableStateOf(initial) }
     var title by remember { mutableStateOf("") }
-    var playlist by remember { mutableStateOf(preferred ?: lists.firstOrNull() ?: "Избранное") }
+    var playlist by remember { mutableStateOf(preferred ?: lists.firstOrNull().orEmpty()) }
     AlertDialog(onDismissRequest = onDismiss, containerColor = Panel,
         title = { Text("Добавить ссылку") },
         text = {
@@ -252,7 +262,7 @@ fun AddClipDialog(initial: String, lists: List<String>, preferred: String?, onDi
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { if (url.isNotBlank()) onSave(title, url, playlist) }) { Text("Сохранить", color = Accent) } },
+        confirmButton = { TextButton(enabled = url.isNotBlank() && playlist.isNotBlank(), onClick = { if (url.isNotBlank() && playlist.isNotBlank()) onSave(title, url, playlist) }) { Text("Сохранить", color = Accent) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } })
 }
 
@@ -284,16 +294,27 @@ fun VideoPage(clip: Clip, context: Context, onToggleFavorite: (Clip) -> Unit) {
                 }
             }
         } else {
-            Column(Modifier.align(Alignment.Center).padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("↗", color = Accent, fontSize = 54.sp)
-                Text("Это ссылка, а не видеофайл", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(8.dp))
-                Text("Чтобы смотреть ролик внутри Viblio, сохрани видеофайл MP4 на телефон и добавь его кнопкой «+ Файл». Ссылку TikTok можно открыть отдельно.", color = Muted)
-                Spacer(Modifier.height(18.dp))
-                Button(onClick = {
-                    runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(clip.url)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                }, colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Bg)) { Text("Открыть ссылку") }
-            }
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { viewContext ->
+                    WebView(viewContext).apply {
+                        setBackgroundColor(android.graphics.Color.BLACK)
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.mediaPlaybackRequiresUserGesture = false
+                        settings.loadsImagesAutomatically = true
+                        settings.useWideViewPort = true
+                        settings.loadWithOverviewMode = true
+                        webChromeClient = WebChromeClient()
+                        webViewClient = WebViewClient()
+                        loadUrl(clip.url)
+                    }
+                },
+                update = { view -> if (view.url != clip.url) view.loadUrl(clip.url) }
+            )
+            Text("TikTok · встроенная страница", color = Color.White.copy(alpha = 0.72f), fontSize = 11.sp,
+                modifier = Modifier.align(Alignment.TopStart).padding(14.dp)
+                    .background(Color(0x88202020), RoundedCornerShape(18.dp)).padding(horizontal = 12.dp, vertical = 8.dp))
         }
         Text(clip.title, color = Color.White, fontWeight = FontWeight.Bold,
             modifier = Modifier.align(Alignment.BottomStart).padding(20.dp))
